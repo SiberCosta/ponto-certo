@@ -209,7 +209,7 @@ textarea{min-height:80px;font-family:var(--font-mono);font-size:.78rem}
 <script>
 (function(){
 "use strict";
-/* ========= configuração do Supabase (projeto planta-obra) ========= */
+/* ========= configuração do Supabase (projeto da ObraFlow, ref. pwioeiuhmnsggpcfdbvo) ========= */
 const SUPABASE_URL="https://pwioeiuhmnsggpcfdbvo.supabase.co";
 const SUPABASE_KEY="sb_publishable_4Qz0ymuIdD_Twv882ivVgA_5E1YHAwv";
 
@@ -245,8 +245,8 @@ function holidays(y){
 const holidayName=k=>holidays(+k.slice(0,4))[k];
 
 /* ---------- estado ---------- */
-const DEFAULTS={daily:8,weekly:40,salary:0,limitYear:175,restMand:0,restComp:6,nightPct:25,
-  requireLoc:false,workLat:null,workLng:null,workRadius:200,workName:""};
+const DEFAULTS={daily:8,weekly:40,salary:0,limitYear:175,restMand:0,restComp:6,nightPct:25,autoBreak:true,breakMin:60,
+  requireLoc:false,workLat:null,workLng:null,workRadius:200,workName:"",tz:""};
 let settings={...DEFAULTS};
 /* days[k] = { t, p:[["08:00","12:00"],...], g:[[locEntrada,locSaida],...], note }
    loc = { lat, lng, acc, d (metros até ao local de trabalho) } ou { err:"motivo" } */
@@ -256,6 +256,8 @@ let viewMonth=(()=>{const d=new Date();return {y:d.getFullYear(),m:d.getMonth()}
 let viewYear=new Date().getFullYear();
 let sb=null,session=null,ready=false,busyPunch=false;
 let lastFix=null; // última posição obtida (para mostrar no relógio)
+let tokenInfo=undefined,newToken=null,confirmToken=false; // atalho do iOS
+const RPC_URL=SUPABASE_URL+"/rest/v1/rpc/ponto_picar";
 
 /* ---------- regras de cálculo ---------- */
 const PCT={u1lo:.25,u1hi:.5,u2lo:.375,u2hi:.75,rlo:.5,rhi:1};
@@ -291,6 +293,13 @@ function compute(src,s,now){
       iv.push([a,b,!p[1]]);worked+=b-a;night+=nightOverlap(a,b);
       if(b-a>300)longRun=true;
     });
+    let brk=0;
+    if(s.autoBreak&&worked>300){ // pausa de almoço (art. 213.º): desconta a parte não picada
+      const so=iv.slice().sort((x,y)=>x[0]-y[0]);let gaps=0;
+      for(let i=1;i<so.length;i++)gaps+=Math.max(0,so[i][0]-so[i-1][1]);
+      brk=Math.max(0,Math.min((+s.breakMin||0)-gaps,worked-300));
+      worked-=brk;night=Math.min(night,worked);
+    }
     const type=dayType(k,d,s);
     const bk={u1lo:0,u1hi:0,u2lo:0,u2hi:0,rlo:0,rhi:0};
     let cum=cumY[y]||0,normal=0,ex=0;
@@ -307,9 +316,9 @@ function compute(src,s,now){
     if(openPast)warn.push("Falta registar uma saída neste dia.");
     if(type.kind==="util"&&ex>120)warn.push("Mais de 2 horas suplementares num dia útil (limite do art. 228.º).");
     if(type.kind==="rest"&&ex>s.daily*60)warn.push("Trabalho em dia de descanso acima do período normal diário (art. 228.º).");
-    if(longRun)warn.push("Mais de 5 horas seguidas sem intervalo (art. 213.º).");
+    if(longRun&&!s.autoBreak)warn.push("Mais de 5 horas seguidas sem intervalo (art. 213.º).");
     if(far)warn.push(far===1?"Uma picagem foi feita fora do local de trabalho.":far+" picagens foram feitas fora do local de trabalho.");
-    res[k]={worked,normal,ex,night,bk,type,iv,warn,live,cum};
+    res[k]={worked,brk,normal,ex,night,bk,type,iv,warn,live,cum};
   }
   return res;
 }
@@ -494,6 +503,7 @@ function viewHoje(){
       <div class="stat ex"><span class="label">Suplementar</span><b>${fmtH(r&&r.ex)}</b></div>
       <div class="stat nt"><span class="label">Noturno</span><b>${fmtH(r&&r.night)}</b></div>
     </div>
+    ${r&&r.brk>0?`<p class="muted" style="margin:0;font-size:.85rem">Pausa de almoço descontada: ${fmtH(r.brk)}. Para contar o tempo real, pique a saída e a entrada do almoço.</p>`:""}
     ${r&&r.ex>0?`<div class="breakdown">${breakdownRows(r.bk)}</div>`:""}
     ${r&&type.kind==="util"&&r.normal<settings.daily*60&&r.worked>0?`<p class="muted" style="margin:0;font-size:.85rem">Faltam ${fmtH(settings.daily*60-r.normal)} para completar o período normal de ${settings.daily}h.</p>`:""}
     ${val>0?`<div class="spread" style="font-size:.9rem"><span class="muted">Valor de suplementar e noturno</span><b class="mono">${eur.format(val)}</b></div>`:""}
@@ -597,6 +607,7 @@ function viewDef(){
     </div>
     <label class="check"><input type="checkbox" id="s-requireLoc" ${s.requireLoc?"checked":""}><span>Só aceitar picagens com localização<br><span class="muted" style="font-size:.8rem">Se o GPS falhar ou for negado, a picagem não é registada.</span></span></label>
   </section>
+  ${shortcutCard()}
   <section class="card">
     <h2>O seu horário</h2>
     <div class="form">
@@ -604,7 +615,9 @@ function viewDef(){
       <div class="field"><label for="s-weekly">Período normal semanal (horas)</label><input id="s-weekly" type="number" min="1" max="60" step="0.5" value="${s.weekly}"><span class="hint">Regra geral: 40h (art. 203.º)</span></div>
       <div class="field"><label for="s-restMand">Descanso semanal obrigatório</label><select id="s-restMand">${wdOpt(s.restMand)}</select></div>
       <div class="field"><label for="s-restComp">Descanso complementar</label><select id="s-restComp">${wdOpt(s.restComp,true)}</select></div>
+      <div class="field"><label for="s-breakMin">Pausa de almoço (minutos)</label><input id="s-breakMin" type="number" min="0" max="120" step="5" value="${s.breakMin}"><span class="hint">Entre 1h e 2h, após no máximo 5h seguidas (art. 213.º)</span></div>
     </div>
+    <label class="check"><input type="checkbox" id="s-autoBreak" ${s.autoBreak?"checked":""}><span>Descontar a pausa automaticamente<br><span class="muted" style="font-size:.8rem">Em dias com mais de 5h, a pausa que não foi picada é retirada das horas trabalhadas. Se picar a saída e a entrada do almoço, conta o tempo real.</span></span></label>
   </section>
   <section class="card">
     <h2>Remuneração e limites</h2>
@@ -620,11 +633,40 @@ function viewDef(){
       <li><b>Dia útil:</b> até ao período normal diário conta como normal. O excesso é trabalho suplementar. Se a semana passar do período semanal, o excedente também passa a suplementar.</li>
       <li><b>Acréscimos (art. 268.º):</b> até 100 horas por ano, 1.ª hora +25% e seguintes +37,5% em dia útil; +50% em descanso ou feriado. A partir das 100 horas: +50%, +75% e +100%.</li>
       <li><b>Descanso e feriados:</b> todas as horas são suplementares. Feriados nacionais (art. 234.º) são reconhecidos automaticamente; o feriado municipal marca-se ao corrigir o dia.</li>
+      <li><b>Pausa de almoço:</b> em dias com mais de 5h, é descontada a pausa definida (1h por defeito), menos o intervalo que já tenha picado.</li>
       <li>Um contrato coletivo pode fixar valores mais favoráveis. Nesse caso prevalece o contrato.</li>
     </ul>
   </section>
   <section class="card">
     <div class="spread"><span class="muted" style="font-size:.88rem">Sessão iniciada como <b>${esc(session&&session.user.email)}</b></span><button class="btn" id="logout">Terminar sessão</button></div>
+  </section>`;
+}
+
+/* ---------- atalho do iOS ---------- */
+const fmtDT=iso=>{const d=new Date(iso);return d.getDate()+" de "+MONTHS[d.getMonth()]+", "+pad(d.getHours())+":"+pad(d.getMinutes())};
+async function loadTokenInfo(){
+  const r=await sb.from("ponto_tokens").select("created_at,last_used_at").maybeSingle();
+  tokenInfo=r.error?null:(r.data||null);if(tab==="def"&&!editing)render();
+}
+function copyField(id,label,value,secret){
+  return `<div class="field"><label for="${id}">${label}</label><div class="row" style="flex-wrap:nowrap">
+    <input id="${id}" type="text" readonly value="${esc(value)}" class="mono" style="border:1px solid var(--line);background:var(--bg);border-radius:9px;padding:10px;font-size:.78rem;flex:1;min-width:0">
+    <button class="btn" data-copy="${esc(value)}" data-what="${esc(label)}">Copiar</button></div>${secret?`<span class="hint">Guarde-a no atalho. Por segurança, só é mostrada agora.</span>`:""}</div>`;
+}
+function shortcutCard(){
+  if(tokenInfo===undefined)loadTokenInfo();
+  const has=!!tokenInfo;
+  const status=tokenInfo===undefined?"A verificar…":has?`Chave ativa desde ${fmtDT(tokenInfo.created_at)}${tokenInfo.last_used_at?` · último uso ${fmtDT(tokenInfo.last_used_at)}`:" · ainda não usada"}`:"Ainda não gerou a chave do atalho.";
+  return `<section class="card">
+    <h2>Atalho do iOS</h2>
+    <p class="muted" style="margin:0;font-size:.88rem">Pique o ponto sem abrir a app: pela Siri, com dois toques nas costas do iPhone, numa etiqueta NFC ou automaticamente ao chegar e sair do trabalho. O atalho envia a localização e a app alterna entre entrada e saída.</p>
+    <div class="gpsline">${PIN}<span>${status}</span></div>
+    ${newToken?copyField("sc-token","Chave pessoal",newToken,true):""}
+    ${has||newToken?copyField("sc-url","Endereço (URL)",RPC_URL)+copyField("sc-key","Cabeçalho apikey",SUPABASE_KEY):""}
+    <div class="row">
+      <button class="btn${has&&!confirmToken?"":" primary"}" id="genToken">${!has?"Gerar chave do atalho":confirmToken?"Confirmar: a chave antiga deixa de funcionar":"Gerar nova chave"}</button>
+      ${has&&!newToken?`<button class="btn ghost" id="revokeToken">Desativar atalho</button>`:""}
+    </div>
   </section>`;
 }
 
@@ -727,11 +769,11 @@ document.addEventListener("keydown",ev=>{if(ev.key==="Escape"&&editing){editing=
 function csvMonth(){
   const res=compute(days,settings,new Date()),{y,m}=viewMonth,prefix=y+"-"+pad(m+1);
   const L=l=>!l?"":l.err?"sem localização":l.lat+","+l.lng+" (±"+l.acc+"m)";
-  const lines=["Data;Tipo;Entrada;Saída;Local entrada;Local saída;Trabalhado no dia;Normal;Suplementar;Noturno;Valor (€);Nota"];
+  const lines=["Data;Tipo;Entrada;Saída;Local entrada;Local saída;Trabalhado no dia;Pausa descontada;Normal;Suplementar;Noturno;Valor (€);Nota"];
   Object.keys(res).filter(k=>k.startsWith(prefix)).sort().forEach(k=>{const r=res[k],d=days[k];
-    const tot=[fmtH(r.worked),fmtH(r.normal),fmtH(r.ex),fmtH(r.night),valueOf(r,settings).toFixed(2).replace(".",",")];
+    const tot=[fmtH(r.worked),fmtH(r.brk),fmtH(r.normal),fmtH(r.ex),fmtH(r.night),valueOf(r,settings).toFixed(2).replace(".",",")];
     (d.p.length?d.p:[[" "," "]]).forEach((p,i)=>{const g=(d.g&&d.g[i])||[];
-      lines.push([k,r.type.label,p[0]||"",p[1]||"",L(g[0]),L(g[1]),...(i===0?tot:["","","","",""]),i===0?(d.note||"").replace(/;/g,","):""].join(";"))});
+      lines.push([k,r.type.label,p[0]||"",p[1]||"",L(g[0]),L(g[1]),...(i===0?tot:["","","","","",""]),i===0?(d.note||"").replace(/;/g,","):""].join(";"))});
   });
   return "﻿"+lines.join("\n");
 }
@@ -769,8 +811,26 @@ view.addEventListener("click",async ev=>{
     settings.workLat=l.lat;settings.workLng=l.lng;persistSettings();render();
     toast("Local de trabalho definido (precisão ±"+l.acc+" m)");
   }
+  else if(t.dataset.copy){
+    const v=t.dataset.copy,w=t.dataset.what;
+    try{await navigator.clipboard.writeText(v);toast(w+" copiado")}
+    catch(e){const inp=t.parentElement.querySelector("input");if(inp){inp.focus();inp.select()}toast("Selecionado. Copie com o menu do iPhone.")}
+  }
+  else if(t.id==="genToken"){
+    if(tokenInfo&&!confirmToken){confirmToken=true;render();return}
+    t.disabled=true;t.textContent="A gerar…";
+    const r=await sb.rpc("ponto_gerar_token");
+    confirmToken=false;
+    if(r.error){toast("Não foi possível gerar a chave.");render();return}
+    newToken=r.data;tokenInfo={created_at:new Date().toISOString(),last_used_at:null};render();toast("Chave gerada");
+  }
+  else if(t.id==="revokeToken"){
+    const r=await sb.from("ponto_tokens").delete().eq("user_id",session.user.id);
+    if(r.error){toast("Não foi possível desativar.");return}
+    tokenInfo=null;newToken=null;render();toast("Atalho desativado");
+  }
   else if(t.id==="clearWork"){settings.workLat=null;settings.workLng=null;persistSettings();render()}
-  else if(t.id==="logout"){await sb.auth.signOut();try{localStorage.removeItem(LS)}catch(e){}days={};settings={...DEFAULTS};pending.clear();render()}
+  else if(t.id==="logout"){await sb.auth.signOut();try{localStorage.removeItem(LS)}catch(e){}days={};settings={...DEFAULTS};pending.clear();tokenInfo=undefined;newToken=null;render()}
 });
 view.addEventListener("change",ev=>{
   const id=ev.target.id;if(!id||!id.startsWith("s-"))return;
@@ -780,7 +840,7 @@ view.addEventListener("change",ev=>{
   else{val=parseFloat(ev.target.value);if(isNaN(val))val=key==="salary"?0:DEFAULTS[key]}
   settings[key]=val;persistSettings();render();toast("Definições guardadas");
 });
-document.querySelector("nav.tabs").addEventListener("click",ev=>{const b=ev.target.closest("button");if(!b)return;tab=b.dataset.tab;render();window.scrollTo(0,0)});
+document.querySelector("nav.tabs").addEventListener("click",ev=>{const b=ev.target.closest("button");if(!b)return;if(b.dataset.tab!=="def"){newToken=null;confirmToken=false}if(b.dataset.tab==="def")tokenInfo=undefined;tab=b.dataset.tab;render();window.scrollTo(0,0)});
 
 let toastT;
 function toast(msg){const box=document.getElementById("toastbox");box.innerHTML=`<div class="toast">${esc(msg)}</div>`;clearTimeout(toastT);toastT=setTimeout(()=>box.innerHTML="",3000)}
@@ -800,7 +860,8 @@ async function onSession(s){
   ready=false;
   if(cacheLoad(s.user.id)){ready=true;setStatus("local","A sincronizar…")}
   render();
-  try{await loadAll();ready=true;setStatus("ok","Sincronizado");flush()}
+  try{await loadAll();ready=true;setStatus("ok","Sincronizado");flush();
+    const tz=Intl.DateTimeFormat().resolvedOptions().timeZone||"Europe/Lisbon";if(settings.tz!==tz){settings.tz=tz;persistSettings()}}
   catch(e){if(Object.keys(days).length||pending.size){ready=true;setStatus("local","Sem rede · a usar dados do telemóvel")}else setStatus("err","Não foi possível carregar os registos")}
   render();
 }
