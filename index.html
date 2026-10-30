@@ -449,6 +449,17 @@ async function punch(){
   render();
 }
 
+/* ---------- picar pelo link #picar (Atalho do iOS: ação "Abrir URL") ---------- */
+let autoDone=false;
+async function maybeAutoPunch(){
+  if(autoDone||!ready||!session||location.hash!=="#picar")return;
+  autoDone=true;
+  try{history.replaceState(null,"",location.pathname+location.search)}catch(e){}
+  editing=null;drawModal();tab="hoje";render();
+  await punch();
+}
+addEventListener("hashchange",()=>{if(location.hash==="#picar"){autoDone=false;maybeAutoPunch()}});
+
 /* ---------- desenho ---------- */
 function timeline(iv,small){
   let h=`<div class="tl${small?" small":""}" aria-hidden="true"><span class="nz" style="left:0;width:${7/24*100}%"></span><span class="nz" style="left:${22/24*100}%;width:${2/24*100}%"></span>`;
@@ -660,6 +671,10 @@ function shortcutCard(){
   return `<section class="card">
     <h2>Atalho do iOS</h2>
     <p class="muted" style="margin:0;font-size:.88rem">Pique o ponto sem abrir a app: pela Siri, com dois toques nas costas do iPhone, numa etiqueta NFC ou automaticamente ao chegar e sair do trabalho. O atalho envia a localização e a app alterna entre entrada e saída.</p>
+    <div class="label" style="margin-top:4px">Opção simples · 1 ação</div>
+    <p style="margin:0;font-size:.88rem">No atalho, adicione só a ação <b>Abrir URL</b> com este endereço. Abre a app e regista o ponto com o GPS.</p>
+    ${copyField("sc-simple","Endereço para o atalho",location.origin+location.pathname+"#picar")}
+    <div class="label" style="margin-top:8px">Opção avançada · sem abrir a app</div>
     <div class="gpsline">${PIN}<span>${status}</span></div>
     ${newToken?copyField("sc-token","Chave pessoal",newToken,true):""}
     ${has||newToken?copyField("sc-url","Endereço (URL)",RPC_URL)+copyField("sc-key","Cabeçalho apikey",SUPABASE_KEY):""}
@@ -863,7 +878,7 @@ async function onSession(s){
   try{await loadAll();ready=true;setStatus("ok","Sincronizado");flush();
     const tz=Intl.DateTimeFormat().resolvedOptions().timeZone||"Europe/Lisbon";if(settings.tz!==tz){settings.tz=tz;persistSettings()}}
   catch(e){if(Object.keys(days).length||pending.size){ready=true;setStatus("local","Sem rede · a usar dados do telemóvel")}else setStatus("err","Não foi possível carregar os registos")}
-  render();
+  render();  maybeAutoPunch();
 }
 (async()=>{
   if(!window.supabase||!window.supabase.createClient){setStatus("err","Sem ligação");render();return}
